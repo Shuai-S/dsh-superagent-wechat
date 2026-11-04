@@ -2,17 +2,22 @@
  *  (config-hash keyed, dingtalk/mail style), feed inbound messages through the
  *  Trigger translation, remember each message's context_token, and persist the
  *  get_updates_buf cursor so restarts resume without gaps. errcode -14 stops
- *  that account's poller and reports the health error until the token changes. */
+ *  that account's poller and reports the health error until the token changes.
+ *
+ *  M2: file/video pre-download to ~/.dsh/wechat-attachments (C4), local
+ *  history append on every inbound (C5), and the pending-resend flush once a
+ *  fresh context_token arrives (C6). */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { SourceContextLike } from './types.ts'
 import { DEFAULT_BASE_URL, DEFAULT_LONG_POLL_TIMEOUT_MS, SESSION_EXPIRED_ERRCODE, getUpdates, normalizeBaseUrl, notifyStart, notifyStop, responseErrcode } from './ilink.ts'
 import { clearContextTokens, rememberContextToken } from './context-tokens.ts'
-import { InboundMessageSchema, buildTrigger } from './trigger.ts'
-import { channelConfig, HEALTH_ENTRY, type AccountConfig, type WechatConfig } from './wechat-kind.ts'
+import { InboundMessageSchema, buildTrigger, inboundMessageKey } from './trigger.ts'
+import { channelConfig, HEALTH_ENTRY, tryResendPending, type AccountConfig, type WechatConfig } from './wechat-kind.ts'
+import { downloadIlinkMediaToFile, deriveMediaRefs, forgetMedia, type DownloadedNote } from './media.ts'
+import { appendHistory } from './history.ts'
+import { STATE_DIR, sanitizeSegment } from './util.ts'
 
-const STATE_DIR = join(homedir(), '.local', 'state', 'dsh-superagent-wechat')
 const CURSOR_FILE = join(STATE_DIR, 'cursors.json')
 
 /** 单批消息过多按游标重置防御处理：先推进游标、整批跳过（先例：@pawastation poller）。 */
@@ -64,6 +69,25 @@ interface AccountState {
   failures: number
 }
 
+/** C4：入站消息里的 file/video 预落盘（带超时降级），路径经 buildTrigger 注入 trigger 文本。 */
+async function predownloadFiles(account: AccountConfig, idKey: string, items: Parameters<typeof deriveMediaRefs>[2], signal: AbortSignal): Promise<DownloadedNote[]> {
+  const refs = deriveMediaRefs(account.id, idKey, items)
+  const notes: DownloadedNote[] = []
+  for (const ref of refs.values()) {
+    if (ref.kind === 'image') continue // 图片走 threadContext.image() 按需注入
+    try {
+      const saved = await downloadIlinkMediaToFile(account.id, ref, { signal })
+      notes.push({ kind: ref.kind, name: ref.fileName, path: saved.path })
+      console.error('[wechat] media saved: kind=' + ref.kind + ' bytes=' + saved.bytes + ' path=' + saved.path)
+    } catch (error) {
+      notes.push({ kind: ref.kind, name: ref.fileName, error: String(error).slice(0, 160) })
+      console.error('[wechat] media download failed: kind=' + ref.kind + ' ' + String(error).slice(0, 200))
+    }
+    if (signal.aborted) break
+  }
+  return notes
+}
+
 async function pollAccount(source: SourceContextLike, account: AccountConfig, state: AccountState, cursors: Record<string, string>, outerSignal: AbortSignal): Promise<void> {
   const signal = state.controller.signal
   let baseUrl: string
@@ -108,6 +132,7 @@ async function pollAccount(source: SourceContextLike, account: AccountConfig, st
         continue
       }
       state.failures = 0
+      const config = channelConfig.current
       const msgs = resp.msgs ?? []
       if (msgs.length > MAX_BATCH) {
         if (resp.get_updates_buf) {
@@ -121,16 +146,33 @@ async function pollAccount(source: SourceContextLike, account: AccountConfig, st
       let interrupted = false
       for (const raw of msgs) {
         if (signal.aborted) { interrupted = true; break }
-        // 先缓存回复凭证再翻译：哪怕后续 scope 过滤，token 也已就位（引擎侧白名单仍生效）。
-        rememberContextToken(account.id, raw.from_user_id, raw.context_token)
         const parsed = InboundMessageSchema.safeParse(raw)
         if (!parsed.success) { unreadable += 1; continue }
         const msg = parsed.data
         if (msg.create_time_ms && msg.create_time_ms > 0 && Date.now() - msg.create_time_ms > STALE_MS) continue
-        const trigger = buildTrigger(account, msg)
+        // 回复凭证先入缓存（哪怕后续 scope 过滤，token 也已就位；引擎侧白名单仍生效）。
+        rememberContextToken(account.id, msg.from_user_id, msg.context_token)
+        const from = (msg.from_user_id ?? '').trim()
+        const idKey = inboundMessageKey(msg)
+        // C6：该用户刚发来消息（= 新 context_token 就位），先补发超窗暂存（开关开才动作）。
+        if (config?.resendOnWindowExpired && from && idKey) {
+          await tryResendPending(account, from, config.windowHours).catch((error: unknown) => {
+            console.error('[wechat] resend flush error: ' + String(error).slice(0, 160))
+          })
+        }
+        // C4：file/video 预落盘；图片留待 threadContext.image() 按需注入。
+        let notes: DownloadedNote[] = []
+        if (from && idKey) {
+          notes = await predownloadFiles(account, idKey, msg.item_list, signal)
+        }
+        const trigger = buildTrigger(account, msg, notes)
         if (!trigger) continue
         // 首条消息即抄写来源：日志打印发送者 id 供 Policy 白名单填写（id 非凭据）。
-        console.error('[wechat] msg in account=' + account.id + ' from=' + (msg.from_user_id ?? '?') + ' id=' + trigger.id + ' text="' + trigger.text.slice(0, 60) + '"')
+        console.error('[wechat] msg in account=' + account.id + ' from=' + from + ' id=' + trigger.id + ' text="' + trigger.text.slice(0, 60) + '"')
+        // C5：入站历史（本地即唯一历史源；追加失败不影响接收）。
+        await appendHistory(account.id, from, { id: trigger.id, from, at: trigger.at, text: trigger.text, bot: false }).catch((error: unknown) => {
+          console.error('[wechat] history append failed: ' + String(error).slice(0, 160))
+        })
         await source.receive(trigger)
       }
       if (interrupted) break // 游标不动，重启后重放（trigger id 幂等）
@@ -171,6 +213,7 @@ export async function watch(source: SourceContextLike, signal: AbortSignal): Pro
             state.controller.abort()
             states.delete(id)
             clearContextTokens(id)
+            forgetMedia(id)
           }
         }
         let live = 0
@@ -217,4 +260,3 @@ export async function watch(source: SourceContextLike, signal: AbortSignal): Pro
   for (const state of states.values()) state.controller.abort()
   await Promise.allSettled([...states.values()].map((state) => state.done))
 }
-

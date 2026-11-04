@@ -47,8 +47,10 @@ node bin/wechat-qr.mjs     # 或 pnpm exec dsh-superagent-wechat-qr（链接过 
 - **仅私聊**：带 `group_id` 的消息忽略；iLink 无群聊发送能力。
 - **出站只发文本**：单条按 1800 字符切分（微信单条上限内取保守值）；防御限速 20 条/分钟（串行 + 3s 间隔 + 60s 窗口硬上限，超限抛错由 Outbox 退避重试）。
 - **出站语音明确不做**：实测服务端对机器人语音 `ret=0` 接受但不投递（openclaw 生态同结论）。
-- **媒体 M1 占位**：入站图片/文件/视频在文本中以 `[wechat-image]` / `[wechat-file]` / `[wechat-video]` 占位；CDN + AES-128-ECB 下载在 M2 接线（协议细节已备于 docs/ilink-notes.md）。
+- **入站媒体**：图片在消息里以 `[wechat-image:KEY]` 标记，评估/会话按需经 CDN + AES-128-ECB 下载解密后注入会话（魔数判定格式，解密失败显式报错不猜测）；文件/视频在收到时自动落盘 `~/.dsh/wechat-attachments/<账号>/<消息id>/`（分段下载 + 100MiB 上限 + 断点续传），路径注入消息文本供 read/bash/ffmpeg 消化；语音用服务端 ASR 转写。
 - 语音入站可用：服务端自带 ASR 转写（`voice_item.text`），直接作为文本进入引擎。
+- **本地会话历史**：每 (账号, 用户) 一份 JSONL（`~/.local/state/dsh-superagent-wechat/history/`，0600，滚动保留 500 条），只存 id/from/at/text/bot，无任何凭据；评估的多轮上下文即来自它（iLink 无历史消息 API）。
+- **超窗暂存补发（默认关）**：开启「超窗暂存补发」后，被 20h 安全窗拒绝的出站文本暂存本地（每用户最多 3 条，FIFO 丢最旧），该用户下次发消息、新 context_token 就位后逐条补发（幂等 client_id，失败保留下次再试）。这只是入站触发的额外尽力，**不替代**引擎 Outbox 的重试——Outbox 一直会重试，补发只是让文本在窗口恢复后仍能到达。
 
 ## 凭据安全
 

@@ -28,12 +28,14 @@ export function apply(ctx: Context): void {
     return async () => { controller.abort(); await running }
   })
 }
-export { wechatKind, WechatConfigSchema, HEALTH_ENTRY } from './wechat-kind.ts'
-export { splitOutboundText } from './wechat-kind.ts'
-export { buildTrigger, extractInboundText } from './trigger.ts'
+export { wechatKind, WechatConfigSchema, HEALTH_ENTRY, splitOutboundText, outboundClientId, sendTextChunks, tryResendPending, wechatImageKeys } from './wechat-kind.ts'
+export { buildTrigger, inboundMessageKey } from './trigger.ts'
 export { rememberContextToken, readContextToken, clearContextTokens } from './context-tokens.ts'
 export { normalizeBaseUrl, responseErrcode, IlinkError, IlinkSessionExpiredError } from './ilink.ts'
-// 媒体原语（M1 仅导出契约面，M2 接线消费；自检/测试也走这里）
+// 媒体原语与下载（C4）
 export { encryptBuffer, decryptBuffer, aesEcbPaddedSize, parseAesKey, uploadToCdn, buildCdnDownloadUrl } from './ilink.ts'
-export { qrLogin } from './qr.ts'
-export type { QrCredentials, QrLoginCallbacks } from './qr.ts'
+export { deriveMediaRefs, downloadMediaBuffer, downloadIlinkMediaToFile, sniffImageType, resolveMediaAesKey, readMedia, forgetMedia } from './media.ts'
+export type { MediaRef, MediaKind, DownloadedNote } from './media.ts'
+// 本地历史与暂存补发（C5/C6）
+export { appendHistory, readHistoryPage, HISTORY_LIMIT } from './history.ts'
+export { enqueuePending, readPending, dropPending, clearPending, PENDING_MAX } from './pending.ts'

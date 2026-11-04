@@ -9,14 +9,14 @@ export interface ContextTokenEntry { token: string; at: number }
 
 const store = new Map<string, Map<string, ContextTokenEntry>>()
 
-export function rememberContextToken(accountId: string, userId: string | undefined, token: string | undefined): void {
+export function rememberContextToken(accountId: string, userId: string | undefined, token: string | undefined, at: number = Date.now()): void {
   if (!accountId || !userId || !token || !token.trim()) return
   let perAccount = store.get(accountId)
   if (!perAccount) {
     perAccount = new Map()
     store.set(accountId, perAccount)
   }
-  perAccount.set(userId, { token, at: Date.now() })
+  perAccount.set(userId, { token, at })
 }
 
 export type ContextTokenLookup =
