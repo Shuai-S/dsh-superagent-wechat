@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "check": "pnpm typecheck && pnpm build"
+    "check": "pnpm typecheck && pnpm build",
+    "prepare": "pnpm build"
   },
   "dsh": {
     "bundle": {
