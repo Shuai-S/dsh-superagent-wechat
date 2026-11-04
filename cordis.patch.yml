@@ -1,0 +1,4 @@
+# Mount the wechat Source plugin into the superagent profile.
+- insert:
+    - id: dsh-superagent-wechat
+      name: 'dsh-superagent-wechat'

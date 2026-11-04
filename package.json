@@ -1,0 +1,53 @@
+{
+  "name": "dsh-superagent-wechat",
+  "description": "WeChat (ClawBot/iLink) Source for dsh-superagent: official personal-account bot long-poll feeds messages into the engine pipeline; replies go back via sendmessage with the inbound context_token.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "Shuai-S",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "bin": {
+    "dsh-superagent-wechat-qr": "./bin/wechat-qr.mjs"
+  },
+  "files": [
+    "lib",
+    "bin",
+    "docs",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm typecheck && pnpm build"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "manifestVersion": 1
+  },
+  "dependencies": {
+    "zod": "^4.4.3",
+    "qrcode-terminal": "0.12.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@types/node": "^22.20.0",
+    "tsdown": "^0.4.0",
+    "typescript": "^5.7.0"
+  }
+}
