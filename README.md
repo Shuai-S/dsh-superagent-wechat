@@ -1,23 +1,27 @@
 # dsh-superagent-wechat
 
-微信个人号 Source 插件（ClawBot / 腾讯 iLink 官方 Bot API）：手机微信私聊给机器人发消息即可给 superagent 引擎派活，回复直接回微信。
+微信个人号 Source 插件（ClawBot / 腾讯 iLink 官方 Bot API）：手机微信私聊给机器人发消息即可向 superagent 引擎派活，回复直接回微信。
 
 - 收消息：`ilink/bot/getupdates` HTTP 长轮询（免公网，无需回调 URL/隧道）
 - 发消息：`ilink/bot/sendmessage`，携带入站消息下发的 `context_token`
 - 引擎接线：`inject [orchestrator]` 注册 `wechat` SourceKind，走标准 准入→评估→Ticket→执行 链路
-- 协议细节与来源：见 [docs/ilink-notes.md](docs/ilink-notes.md)（腾讯官方 openclaw-weixin 2.4.10 源码交叉核验）
+- 协议细节与来源：见 [docs/ilink-notes.md](docs/ilink-notes.md)（基于腾讯官方 openclaw-weixin 2.4.10 源码交叉核验）
 
-## 安装（superagent profile）
+## 安装
 
 ```sh
-pnpm install && pnpm check
+# 从 npm 安装
+dsh plugin --profile superagent add dsh-superagent-wechat
+
+# 或从本地源码安装（开发场景）
 dsh plugin --profile superagent add "link:$PWD"
-scripts/dsh-superagent restart   # 在 dsh-superagent-prototype 内
 ```
 
-## 开通前提（重要）
+安装后重启引擎生效。
 
-- **手机微信需已获得「微信机器人 / ClawBot」功能入口**（手机微信 → 我 → 设置 → 插件）。腾讯灰度分批开放；账号没有入口时扫码/连接会失败，插件无法绕过，只能等灰度或换有资格的微信号。
+## 开通前提
+
+- **手机微信需已获得「微信机器人 / ClawBot」功能入口**（手机微信 → 我 → 设置 → 插件）。该功能由腾讯灰度分批开放；账号没有入口时扫码/连接会失败，插件无法绕过，只能等待灰度或更换有资格的微信号。
 - 使用最新版手机微信扫码。机器人绑定在**个人微信号**上，不是公众号/企业微信。
 
 ## 扫码绑定（获取凭据）
@@ -39,31 +43,24 @@ node bin/wechat-qr.mjs     # 或 pnpm exec dsh-superagent-wechat-qr（链接过 
 - 机器人收到某账号**首条消息**时，日志会打印发送者 id：`[wechat] msg in account=main from=wxid_xxx ...`，照抄进白名单即可。
 - 白名单之外的消息由引擎按准入表过滤（面板可见），不会派活。
 
-## 运行限制（务必了解）
+## 运行限制
 
-- **不允许冷启动**：iLink 协议下机器人不能给「从未发过消息」的用户发消息（没有 `context_token`）。回复/通知都依赖该用户最近的入站消息；无缓存或超窗时出站显式抛错（面板可见），不会静默丢。
+- **不允许冷启动**：iLink 协议下机器人不能给「从未发过消息」的用户发消息（没有 `context_token`）。回复/通知都依赖该用户最近的入站消息；无缓存或超窗时出站显式抛错（面板可见），不会静默丢弃。
 - **24 小时窗口**：服务端会丢弃用户超 24h 未互动后的 Bot 消息。插件默认按 **20h 安全窗**（`windowHours` 可调 1–23）拒发，等待用户下次发消息后由 Outbox 重试送达。
-- **登录过期（errcode -14）**：bot_token 失效后该账号停止轮询，健康状态报「登录过期，请重新扫码绑定」；重新运行 `node bin/wechat-qr.mjs` 并把新 `botToken` 填进配置即恢复。
+- **登录过期（errcode -14）**：bot_token 失效后该账号停止轮询，健康状态报「登录过期，请重新扫码绑定」；重新运行 `node bin/wechat-qr.mjs` 并将新 `botToken` 填进配置即恢复。
 - **仅私聊**：带 `group_id` 的消息忽略；iLink 无群聊发送能力。
 - **出站只发文本**：单条按 1800 字符切分（微信单条上限内取保守值）；防御限速 20 条/分钟（串行 + 3s 间隔 + 60s 窗口硬上限，超限抛错由 Outbox 退避重试）。
-- **出站语音明确不做**：实测服务端对机器人语音 `ret=0` 接受但不投递（openclaw 生态同结论）。
-- **入站媒体**：图片在消息里以 `[wechat-image:KEY]` 标记，评估/会话按需经 CDN + AES-128-ECB 下载解密后注入会话（魔数判定格式，解密失败显式报错不猜测）；文件/视频在收到时自动落盘 `~/.dsh/wechat-attachments/<账号>/<消息id>/`（分段下载 + 100MiB 上限 + 断点续传），路径注入消息文本供 read/bash/ffmpeg 消化；语音用服务端 ASR 转写。
-- 语音入站可用：服务端自带 ASR 转写（`voice_item.text`），直接作为文本进入引擎。
+- **出站语音不支持**：服务端对机器人语音返回 `ret=0` 但不投递。
+- **入站媒体**：图片在消息里以 `[wechat-image:KEY]` 标记，评估/会话按需经 CDN + AES-128-ECB 下载解密后注入会话（魔数判定格式，解密失败显式报错不猜测）；文件/视频在收到时自动落盘 `~/.dsh/wechat-attachments/<账号>/<消息id>/`（分段下载 + 100MiB 上限 + 断点续传），路径注入消息文本供 read/bash/ffmpeg 消化；语音由服务端 ASR 直接转写为文本进入引擎。
 - **本地会话历史**：每 (账号, 用户) 一份 JSONL（`~/.local/state/dsh-superagent-wechat/history/`，0600，滚动保留 500 条），只存 id/from/at/text/bot，无任何凭据；评估的多轮上下文即来自它（iLink 无历史消息 API）。
-- **超窗暂存补发（默认关）**：开启「超窗暂存补发」后，被 20h 安全窗拒绝的出站文本暂存本地（每用户最多 3 条，FIFO 丢最旧），该用户下次发消息、新 context_token 就位后逐条补发（幂等 client_id，失败保留下次再试）。这只是入站触发的额外尽力，**不替代**引擎 Outbox 的重试——Outbox 一直会重试，补发只是让文本在窗口恢复后仍能到达。
+- **超窗暂存补发（默认关）**：开启后被 20h 安全窗拒绝的出站文本暂存本地（每用户最多 3 条，FIFO 丢最旧），该用户下次发消息、新 context_token 就位后逐条补发（幂等 client_id，失败保留下次再试）。这是入站触发的额外尽力投递，**不替代**引擎 Outbox 的重试——Outbox 会持续重试，补发只是让文本在窗口恢复后仍能到达。
 
 ## 凭据安全
 
-- `botToken` 等凭据**只保存进引擎本地配置**（sqlite，仅本机可读），不写入日志、不写入聊天、不进仓库。
+- `botToken` 等凭据**只保存进引擎本地配置**（SQLite，仅本机可读），不写入日志、不写入聊天、不进仓库。
 - 插件日志只出现发送者 id 与消息摘要，不出现 token；`context_token` 缓存在内存，进程退出即消失。
 - 长轮询游标（`get_updates_buf`）持久化在 `~/.local/state/dsh-superagent-wechat/cursors.json`（0600），重启断点续传。
 - API 基址强制白名单：仅 `https://*.weixin.qq.com:443`，token 不会发往其他主机。
-
-## 设计与契约来源
-
-- 引擎 Source 契约：`dsh-superagent-prototype/docs/008-cookbook.md`
-- 仓库形态与实现先例：`dsh-superagent-dingtalk`（watch/config-hash/Stream 直连）、`dsh-superagent-mail`（多账号 rows 先例）
-- iLink 协议：腾讯官方 `@tencent-weixin/openclaw-weixin` 2.4.10（MIT）源码实读 + 多个独立 SDK 交叉验证，详见 [docs/ilink-notes.md](docs/ilink-notes.md)；因官方包导出面绑死 OpenClaw 插件 SDK，本仓库按官方源码自实现最小 HTTP 客户端（`src/ilink.ts`）。
 
 ## License
 
