@@ -205,7 +205,8 @@ export async function watch(source: SourceContextLike, signal: AbortSignal): Pro
       if (!config || accounts.length === 0) {
         for (const state of states.values()) state.controller.abort()
         states.clear()
-        source.report(HEALTH_ENTRY, { state: 'paused', detail: 'waiting for wechat accounts in settings' })
+        const bindPort = config?.bindPort ?? 26678
+        source.report(HEALTH_ENTRY, { state: 'paused', detail: 'waiting for wechat accounts in settings — open the bind page http://127.0.0.1:' + bindPort + ' to scan' })
       } else {
         const wanted = new Map(accounts.map((a) => [a.id, a]))
         for (const [id, state] of [...states]) {
@@ -247,7 +248,8 @@ export async function watch(source: SourceContextLike, signal: AbortSignal): Pro
           live += 1
         }
         if (states.size === 0) {
-          source.report(HEALTH_ENTRY, { state: 'paused', detail: missingToken > 0 ? 'waiting for botToken in account rows (run dsh-superagent-wechat-qr)' : 'no polling account' })
+          const bindPort = config?.bindPort ?? 26678
+          source.report(HEALTH_ENTRY, { state: 'paused', detail: missingToken > 0 ? 'waiting for botToken in account rows — run dsh-superagent-wechat-qr or open the bind page http://127.0.0.1:' + bindPort : 'no polling account' })
         } else if (expiredCount > 0 && live === 0) {
           // 全部账号过期：保持 pollAccount 报出的 sessionExpired 错误，不覆盖。
         }

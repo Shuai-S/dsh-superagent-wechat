@@ -15,6 +15,7 @@ import { withSendSlot } from './rate-limit.ts'
 import { downloadMediaBuffer, sniffImageType } from './media.ts'
 import { appendHistory, readHistoryPage } from './history.ts'
 import { clearPending, dropPending, enqueuePending, readPending } from './pending.ts'
+import { BIND_HEALTH_ENTRY } from './bind.ts'
 
 export const HEALTH_ENTRY = 'wechatPoll'
 
@@ -32,9 +33,13 @@ export const WechatConfigSchema = z.object({
   /** 超窗补发开关（C6）：开启后超窗被拒的出站文本暂存本地，等该用户下次入站拿到新
    *  context_token 后尽力补发。这只是入站触发的额外尽力，不替代引擎 Outbox 的重试。 */
   resendOnWindowExpired: z.boolean().default(false),
+  /** 面板扫码绑定页：默认在引擎进程内起 127.0.0.1 loopback HTTP 服务，浏览器扫码取凭据。 */
+  bindPageEnabled: z.boolean().default(true),
+  /** 绑定页端口：默认 26678；端口被占用时改一个空闲端口。 */
+  bindPort: z.number().int().min(1024).max(65535).default(26678),
 }).strict()
 export type AccountConfig = { id: string; botToken: string; ilinkBotId: string; baseUrl: string; ilinkUserId: string; name: string }
-export type WechatConfig = { accounts: AccountConfig[]; windowHours: number; resendOnWindowExpired: boolean }
+export type WechatConfig = { accounts: AccountConfig[]; windowHours: number; resendOnWindowExpired: boolean; bindPageEnabled: boolean; bindPort: number }
 
 // channel.send reads config through this holder; watch() refreshes it every round.
 export const channelConfig: { current?: WechatConfig } = {}
@@ -119,14 +124,14 @@ export const wechatKind = {
   kind: 'wechat',
   title: { zh: '微信（ClawBot）', en: 'WeChat (ClawBot)' },
   description: {
-    zh: '个人微信 ClawBot（iLink 官方 Bot API）长轮询直连：私聊给机器人发消息即可派活，回复直接回微信。需先扫码绑定取凭据。',
-    en: 'Personal WeChat ClawBot (official iLink Bot API) long-poll: DM the bot to dispatch; replies go straight back. Bind via QR scan first.',
+    zh: '个人微信 ClawBot（iLink 官方 Bot API）长轮询直连：私聊给机器人发消息即可派活，回复直接回微信。需先扫码绑定取凭据；可在绑定页（默认 http://127.0.0.1:26678）扫码绑定，无需终端。',
+    en: 'Personal WeChat ClawBot (official iLink Bot API) long-poll: DM the bot to dispatch; replies go straight back. Bind via QR scan first — the built-in bind page (default http://127.0.0.1:26678) works in a browser, no terminal needed.',
   },
   schema: WechatConfigSchema,
   fields: [
     { key: 'accounts', type: 'rows', dialog: true, label: { zh: '微信账号', en: 'WeChat accounts' }, columns: [
       { key: 'id', type: 'text', label: { zh: '账号标识', en: 'Account id' }, hint: { zh: '自定义短标识（如 main），用于准入行、游标与回复路由', en: 'Custom short key (e.g. main); keys admission rows, cursors and reply routing' } },
-      { key: 'botToken', type: 'text', label: { zh: 'Bot Token（bot_token）', en: 'Bot token' }, hint: { zh: '运行 dsh-superagent-wechat-qr 扫码获得；明文存于引擎配置（本地 sqlite，仅本机可读），不落日志', en: 'From the dsh-superagent-wechat-qr CLI; stored in local engine config, never logged' } },
+      { key: 'botToken', type: 'text', label: { zh: 'Bot Token（bot_token）', en: 'Bot token' }, hint: { zh: '浏览器打开绑定页 http://127.0.0.1:26678 扫码获得（终端 CLI dsh-superagent-wechat-qr 为备选）；明文存于引擎配置（本地 sqlite，仅本机可读），不落日志', en: 'Open the bind page http://127.0.0.1:26678 in a browser and scan (the dsh-superagent-wechat-qr CLI is the fallback); stored in local engine config, never logged' } },
       { key: 'ilinkBotId', type: 'text', label: { zh: 'Bot ID（ilink_bot_id）', en: 'Bot ID (ilink_bot_id)' }, optional: true, hint: { zh: '扫码返回值，仅作展示对账', en: 'From the QR result; display only' } },
       { key: 'baseUrl', type: 'text', label: { zh: 'API 基址（baseurl）', en: 'API base URL' }, optional: true, hint: { zh: '留空用默认 https://ilinkai.weixin.qq.com；优先填扫码返回的 baseurl（就近 IDC）', en: 'Defaults to https://ilinkai.weixin.qq.com; prefer the baseurl from the QR result' } },
       { key: 'ilinkUserId', type: 'text', label: { zh: '扫码者 ID（ilink_user_id）', en: 'Scanner id (ilink_user_id)' }, optional: true, hint: { zh: '扫码者个人 id，仅作展示对账', en: 'Scanner user id; display only' } },
@@ -134,8 +139,10 @@ export const wechatKind = {
     ] },
     { key: 'windowHours', type: 'number', advanced: true, min: 1, max: 23, label: { zh: '主动推送安全窗 / 小时', en: 'Proactive window / hours' }, hint: { zh: '服务端丢弃用户超 24h 未互动后的 Bot 消息；默认按 20h 拒发并等下次入站', en: 'The server drops bot messages to users idle over 24h; refuse after 20h by default' } },
     { key: 'resendOnWindowExpired', type: 'switch', label: { zh: '超窗暂存补发', en: 'Resend after window' }, hint: { zh: '开启后超窗被拒的出站文本暂存本地（每用户最多 3 条），该用户下次发消息时尽力补发；不替代 Outbox 重试', en: 'Park window-refused outbound text (max 3 per user) and resend on the next inbound; complements, not replaces, the Outbox' } },
+    { key: 'bindPageEnabled', type: 'switch', advanced: true, label: { zh: '面板扫码绑定页', en: 'QR bind page' }, hint: { zh: '默认开启：引擎在本机 127.0.0.1 起一个绑定页（http://127.0.0.1:26678），浏览器打开即可扫码绑定，无需终端；关闭后仍可用终端 CLI', en: 'On by default: the engine serves a bind page on 127.0.0.1 (http://127.0.0.1:26678) so you can scan in a browser, no terminal; the CLI stays as fallback' } },
+    { key: 'bindPort', type: 'number', advanced: true, min: 1024, max: 65535, label: { zh: '绑定页端口', en: 'Bind page port' }, hint: { zh: '绑定页监听 127.0.0.1 的端口，默认 26678；端口被占用时改一个空闲端口保存即可', en: 'Loopback port for the bind page, default 26678; change to a free port if it is taken' } },
   ],
-  health: [HEALTH_ENTRY],
+  health: [HEALTH_ENTRY, BIND_HEALTH_ENTRY],
   scope(input: { meta: Record<string, unknown> }, config: WechatConfig) {
     const accountId = String(input.meta.accountId ?? '')
     const account = config.accounts.find((a) => a.id === accountId)
