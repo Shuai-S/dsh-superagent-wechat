@@ -1,0 +1,72 @@
+# 发布工作流：push tag（v<package.json version>）触发，构建后发布到 npm 并创建 GitHub Release。
+#
+# 发布方式（push main 绝不会触发发布）：
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# 前置配置：GitHub 仓库 secret NPM_TOKEN（npmjs.com 生成，需对本包有发布权限）。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # 创建 GitHub Release 并上传 tgz
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.23.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify tag matches package version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "v$PKG_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME 与 package.json 版本 v$PKG_VERSION 不一致。"
+            echo "请先更新 package.json version，再打同名 tag。"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check (typecheck + build)
+        run: pnpm check
+      - name: Pack tarball
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist
+
+      - name: Create GitHub Release with tarball
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" \
+                 --title "$GITHUB_REF_NAME" \
+                 --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/dsh-superagent-wechat-*.tgz --clobber
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # ./ 前缀必须保留：dist/*.tgz 无 ./ 会被 npm-package-arg 解析成 GitHub 仓库短格式（owner/repo）
+        run: npm publish ./dist/dsh-superagent-wechat-*.tgz --registry=https://registry.npmjs.org --access public
