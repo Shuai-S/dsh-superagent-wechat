@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "微信 Source",
+    "description": "微信个人号消息源（ClawBot / 腾讯 iLink 官方 Bot API）：手机微信私聊给机器人发消息即可派活，回复直接回微信，免公网长轮询。"
+  }
+}

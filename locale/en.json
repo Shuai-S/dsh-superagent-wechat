@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WeChat Source",
+    "description": "Personal WeChat source (ClawBot / Tencent iLink official bot API): message the bot from WeChat to dispatch work; replies return via sendmessage — no public endpoint needed."
+  }
+}
